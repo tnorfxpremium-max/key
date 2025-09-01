@@ -1,4 +1,5 @@
 {
-  "tnorf": "active",
-  "test123": "banned"
-}
+  "tnorf": {
+    "status": "active",
+    "hwid": "57aad40619d021fa"
+  },
