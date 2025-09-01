@@ -1,7 +1,7 @@
 return {
     tnorf = {
         status = "active",
-        hwid   = { "57aad40619d021fa", "A1B2C3D4E5F6G7H8" }
+        hwid   = { "57aad40619d021fa", "fcf5849f0499406d" }
     },
     testkey = {
         status = "banned",
