@@ -613,10 +613,12 @@ function buildIdx(){
   DF=new Map();WC=new Map();
   IDX.forEach(function(o){o.g.forEach(function(k){DF.set(k,(DF.get(k)||0)+1)})});
   IDX.forEach(function(o){var t=0;o.g.forEach(function(k){t+=W(k)});o.tw=t;o.n=o.g.size;o.need=0.5+0.45*Math.max(0,(20-o.n)/20)});
+  mathIdx();
 }
 var DTH=D.slice(),DEN2=(window.DEN||[]).map(function(p){return{q:p[0],a:p[1]}}),lang='th';
 buildIdx();
 function score(ocr){
+  var mh=mathHit(ocr);if(mh)return[{d:mh.d,score:mh.sc,len:20,n:20,need:.5}];
   var s=norm(ocr),out=[],pos=new Map(),i;
   if(s.length<4)return out;
   function add(k,p){var a=pos.get(k);if(!a)pos.set(k,a=[]);a.push(p)}
@@ -683,7 +685,7 @@ var cv=$('cv'),cw=$('cw'),cr=$('cr'),csEl=$('cs'),ctEl=$('ct'),ar=$('ar');
 function setStatus(m,k){csEl.textContent=m;csEl.className=k||'';var e=document.getElementById('cmt');if(e&&st.cam){e.textContent=m;e.className=k||''}}
 function drawRect(r){if(!r){cr.hidden=true;return}cr.hidden=false;cr.style.left=r.x*100+'%';cr.style.top=r.y*100+'%';cr.style.width=r.w*100+'%';cr.style.height=r.h*100+'%'}
 function resetSig(){st.prev=null;st.ocrSig=null;st.stable=0}
-$('cb').onclick=function(){$('cp').classList.toggle('off')};
+$('cb').onclick=function(){$('cp').classList.toggle('off');var r=$('prcv');if(!$('cp').classList.contains('off')&&!st.worker&&!st.loading&&!(r&&!r.hidden))ensureOcr()};
 if(!(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia)){$('cgo').disabled=true;setStatus('เบราว์เซอร์นี้แชร์จอไม่ได้ ใช้ Chrome/Edge บนคอม','err')}
 
 /* ลากกรอบ */
@@ -773,7 +775,8 @@ function ratio(a,b){ // สัดส่วนพิกเซลที่เป�
 function prep(src,inv,bin){
   var sw=src.width,sh=src.height,sc=sh<70?4:sh<130?3:sh<260?2:1;
   while(sw*sc>2000&&sc>1)sc--;
-  oc.width=sw*sc;oc.height=sh*sc;octx.imageSmoothingEnabled=true;octx.imageSmoothingQuality='high';
+  sc=Math.max(0.3,Math.min(sc,Math.sqrt(450000/(sw*sh))));
+  oc.width=Math.round(sw*sc);oc.height=Math.round(sh*sc);octx.imageSmoothingEnabled=true;octx.imageSmoothingQuality='high';
   octx.drawImage(src,0,0,oc.width,oc.height);
   var im=octx.getImageData(0,0,oc.width,oc.height),d=im.data,n=d.length/4,g=new Uint8ClampedArray(n),i,j,sum=0;
   for(i=0,j=0;i<n;i++,j+=4){var v=(d[j]*299+d[j+1]*587+d[j+2]*114)/1000;g[i]=v;sum+=v}
@@ -805,19 +808,22 @@ async function tick(){
     st.stable=dPrev<(st.cam?0.05:0.012)?st.stable+1:0;
     if(st.shown&&st.ansSig&&ratio(st.ansSig,sig)>(st.cam?0.3:0.12))markStale(true); // กรอบเปลี่ยนเยอะ คำตอบเก่าอาจไม่ใช่แล้ว
     if(st.busy)return;
-    if(st.stable>=2&&(!st.ocrSig||ratio(st.ocrSig,sig)>(st.cam?0.14:0.03))){st.ocrSig=sig;runOcr(sig)}
+    var chg=!st.ocrSig||ratio(st.ocrSig,sig)>(st.cam?0.14:0.03);
+    if(!chg)st.since=0;else if(!st.since)st.since=Date.now();
+    if(chg&&(st.stable>=(st.cam?2:1)||Date.now()-st.since>600)){st.ocrSig=sig;st.since=0;runOcr(sig)}
   }catch(e){}
   finally{st.ticking=false}
 }
 function markStale(b){ar.classList.toggle('stale',b);if(b)setStatus('รอโจทย์ใหม่…','busy')}
 async function runOcr(sig){
-  st.busy=true;var g0=st.gen;
+  st.busy=true;var g0=st.gen,t0=performance.now();
   try{
     var w=await ensureOcr();if(!w){st.ocrSig=null;return}
     setStatus('กำลังอ่าน…','busy');
     var merged=new Map(),shownText='',list=[];
     // ลองอ่านทีละแบบ เจอที่มั่นใจแล้วหยุดเลย
     var plan=[{inv:0,pad:0},{inv:1,pad:0},{inv:0,pad:0.35,bin:1},{inv:1,pad:0.35}];
+    plan.forEach(function(p,i){p.o=i});if(st.bp)plan.unshift(plan.splice(st.bp,1)[0]);
     for(var i=0;i<plan.length&&st.running;i++){
       var p=plan[i],fr=await grab();if(!fr)break;
       var cc=cropFrom(fr,p.pad);if(fr.bm)fr.bm.close();
@@ -825,11 +831,11 @@ async function runOcr(sig){
       if(txt.trim().length>shownText.length)shownText=txt.trim();
       score(txt).forEach(function(c){var o=merged.get(c.d);if(!o||c.score>o.score)merged.set(c.d,c)});
       list=rank(Array.from(merged.values()));
-      if(list.length){var t=tier(list[0]),gap=list[1]?list[0].score-list[1].score:1;if(t===3||(t===2&&gap>=0.08))break}
+      if(list.length){var t=tier(list[0]),gap=list[1]?list[0].score-list[1].score:1;if(t===3||(t===2&&gap>=0.08)){st.bp=p.o;break}}
     }
-    ctEl.textContent=shownText?'อ่านได้ว่า: '+shownText.replace(/\s+/g,' ').slice(0,160):'';
+    ctEl.textContent=shownText?'อ่านได้ว่า: '+shownText.replace(/\s+/g,' ').slice(0,160)+'  ['+Math.round(performance.now()-t0)+'ms]':'';
     if(!st.running||g0!==st.gen)return;
-    if(st.prev&&ratio(sig,st.prev)>(st.cam?0.12:0.04))return; // ภาพเปลี่ยนระหว่างอ่าน ทิ้งผลนี้
+    if(st.prev&&ratio(sig,st.prev)>(st.cam?0.3:0.2)){st.ocrSig=null;return} // ภาพเปลี่ยนระหว่างอ่าน ทิ้งผลนี้
     var top=list[0],tt=top?tier(top):0;
     if(!tt){if(st.shown)markStale(true);else setStatus('ยังไม่เจอโจทย์ รอ…','busy');return}
     show(list,tt,sig);
@@ -850,6 +856,37 @@ function show(list,t,sig){
 }
 
 
+
+/* โจทย์คณิต: จับด้วยตัวเลขล้วน ไม่สนเครื่องหมาย/จุด ที่ OCR อ่านเพี้ยนบ่อย */
+function mpure(t,max){return String(t).replace(/[\d\s.,،\/÷×xX*+\-−–=?:()OoIl|]/g,'').length<=max}
+function mkey(t){return String(t).replace(/([\d.])[Oo]/g,'$10').replace(/[Oo]([\d.])/g,'0$1').replace(/(\d)[Il|]/g,'$11').replace(/[Il|](\d)/g,'1$1').replace(/\D/g,'')}
+function lev(a,b){var m=a.length,n=b.length,p=[],i,j;for(j=0;j<=n;j++)p[j]=j;for(i=1;i<=m;i++){var c=[i];for(j=1;j<=n;j++)c[j]=Math.min(p[j]+1,c[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1));p=c}return p[n]}
+function mathIdx(){var L=[];D.forEach(function(d){if(mpure(d.q,0)&&/\d\s*[\/÷×xX*+\-−–:]\s*\d/.test(d.q)){var k=mkey(d.q);if(k.length>=3)L.push({d:d,k:k})}});mathIdx.L=L}
+function calc(t){
+  t=String(t).replace(/\s+/g,'').replace(/([\d.])[Oo]/g,'$10').replace(/[Oo]([\d.])/g,'0$1').replace(/(\d)[,،](\d)/g,'$1.$2').replace(/[=?]+$/,'');
+  var N='(\\d+(?:\\.\\d+)?)(?:/(\\d+))?',m=new RegExp('^'+N+'([+\\-−–×xX*÷:])'+N+'$').exec(t);
+  if(!m)return null;
+  function fr(a,b){var dp=(a.split('.')[1]||'').length,n=Math.round(+a*Math.pow(10,dp)),d=Math.pow(10,dp);if(b)d*=+b;return[n,d]}
+  function g(a,b){a=Math.abs(a);while(b){var r=a%b;a=b;b=r}return a||1}
+  var x=fr(m[1],m[2]),y=fr(m[4],m[5]),op=m[3],n,d;
+  if(!y[1]||!x[1])return null;
+  if(op==='+'){n=x[0]*y[1]+y[0]*x[1];d=x[1]*y[1]}
+  else if(/[\-−–]/.test(op)){n=x[0]*y[1]-y[0]*x[1];d=x[1]*y[1]}
+  else if(/[×xX*]/.test(op)){n=x[0]*y[0];d=x[1]*y[1]}
+  else{if(!y[0])return null;n=x[0]*y[1];d=x[1]*y[0]}
+  var q=g(n,d);n/=q;d/=q;if(d<0){n=-n;d=-d}
+  var a=((m[2]||m[5])&&d!==1)?n+'/'+d:String(+(n/d).toFixed(6));
+  return{d:{q:'(คำนวณเอง) '+m[1]+(m[2]?'/'+m[2]:'')+' '+op+' '+m[4]+(m[5]?'/'+m[5]:'')+' =?',a:a},sc:.55}
+}
+function mathHit(ocr){
+  var L=mathIdx.L||[];if(!mpure(ocr,3))return null;
+  var k=mkey(ocr);if(k.length<3)return null;
+  var best=null,bd=99,tie=false;
+  L.forEach(function(e){var dd=lev(k,e.k);if(dd<bd){bd=dd;best=e;tie=false}else if(dd===bd)tie=true});
+  if(best&&bd===0)return{d:best.d,sc:1};
+  if(best&&bd===1&&k.length>=5&&!tie)return{d:best.d,sc:.9};
+  return calc(ocr);
+}
 
 /* แผงเดียว 3 โหมด: คอม(แชร์จอ) / กล้อง / รับคำตอบบนมือถือ */
 var pcp=$('cp'),pscr=document.createElement('div');pscr.id='pscr';
